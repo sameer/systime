@@ -1,9 +1,10 @@
 use std::io::{ErrorKind, Result};
 use std::{io::Error, time::Duration};
 
+use nix::fcntl::FdFlag;
 use nix::sys::event::EventFilter;
 use nix::{
-    fcntl::{FcntlArg, OFlag, fcntl},
+    fcntl::{FcntlArg, fcntl},
     sys::{
         event::{EvFlags, FilterFlag, KEvent, Kqueue},
         time::TimeSpec,
@@ -24,10 +25,10 @@ const CONTINUOUS_TIME_FILTER_FLAGS: FilterFlag =
     FilterFlag::from_bits_retain(libc::NOTE_NSECONDS | libc::NOTE_MACH_CONTINUOUS_TIME);
 const ABSOLUTE_TIME_FILTER_FLAGS: FilterFlag = FilterFlag::from_bits_retain(libc::NOTE_NSECONDS);
 
-/// Creats a [`Kqueue`] with [`OFlag::O_CLOEXEC`] set.
+/// Creates a [`Kqueue`] with [`FdFlag::FD_CLOEXEC`] set.
 fn kqueue() -> Result<Kqueue> {
     let kqueue = Kqueue::new()?;
-    fcntl(&kqueue, FcntlArg::F_SETFL(OFlag::O_CLOEXEC))?;
+    fcntl(&kqueue, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
     Ok(kqueue)
 }
 
@@ -104,6 +105,7 @@ fn remove_timer(kqueue: &Kqueue) -> Result<()> {
 
 #[cfg(feature = "tokio")]
 mod tokio {
+    use std::future::Future;
     use std::io::Result;
     use std::os::fd::{AsFd, AsRawFd, RawFd};
     use std::pin::Pin;
@@ -277,6 +279,7 @@ mod smol {
     use futures_lite::Stream;
     use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
 
+    use std::future::Future;
     use std::io::{Error, Result};
     use std::pin::Pin;
     use std::task::{Context, Poll, ready};
@@ -363,7 +366,7 @@ mod smol {
         type Item = Result<()>;
 
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-            // Mirrors the behavior of `async_io::Timer` which doesn't returns `None` even if this is a never.
+            // Mirrors the behavior of `async_io::Timer` which doesn't return `None` even if this is a never.
             self.poll(cx).map(Some)
         }
     }

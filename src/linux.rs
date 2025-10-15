@@ -46,7 +46,8 @@ fn interval_at(
 
 #[cfg(feature = "tokio")]
 mod tokio {
-    use std::io::{Error, Result};
+    use std::future::Future;
+    use std::io::{Error, ErrorKind, Result};
     use std::os::fd::{AsFd, AsRawFd, RawFd};
     use std::pin::Pin;
     use std::task::ready;
@@ -108,13 +109,20 @@ mod tokio {
     pub struct Sleep(#[pin] TokioTimerFd);
 
     impl Sleep {
+        fn clear(&mut self) -> Result<()> {
+            self.0.0.get_ref().0.unset()?;
+            match self.0.0.get_ref().0.wait().map_err(Error::from) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == ErrorKind::WouldBlock => Ok(()),
+                Err(other) => Err(other),
+            }
+        }
+
         /// Resets this instance to end after `duration`.
         ///
         /// Calling this instead of recreating the sleep lets you reuse underlying resources.
-        pub fn reset(self: Pin<&mut Self>, duration: Duration) -> Result<()> {
-            // Clear existing timer
-            let _ = self.0.0.get_ref().0.unset();
-            let _ = self.0.0.get_ref().0.wait();
+        pub fn reset(mut self: Pin<&mut Self>, duration: Duration) -> Result<()> {
+            self.as_mut().clear()?;
             super::sleep(&self.0.0.get_ref().0, duration)
         }
     }
@@ -143,21 +151,26 @@ mod tokio {
             (&mut self.fd).await
         }
 
+        fn clear(&mut self) -> Result<()> {
+            self.fd.0.get_ref().0.unset()?;
+            match self.fd.0.get_ref().0.wait().map_err(Error::from) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == ErrorKind::WouldBlock => Ok(()),
+                Err(other) => Err(other),
+            }
+        }
+
         /// Resets this instance to end after the duration specified when it was created.
         ///
         /// Calling this instead of recreating the interval lets you reuse underlying resources.
         pub fn reset(&mut self) -> Result<()> {
-            // Clear existing timer
-            let _ = self.fd.0.get_ref().0.unset();
-            let _ = self.fd.0.get_ref().0.wait();
+            self.clear()?;
             super::interval(&self.fd.0.get_ref().0, self.duration)
         }
 
         /// Like [`Interval::reset`], but lets you specify a duration after which the interval timer should begin.
         pub fn reset_after(&mut self, after: Duration) -> Result<()> {
-            // Clear existing timer
-            let _ = self.fd.0.get_ref().0.unset();
-            let _ = self.fd.0.get_ref().0.wait();
+            self.clear()?;
             super::interval_at(&self.fd.0.get_ref().0, after, self.duration)
         }
     }
@@ -205,6 +218,7 @@ mod smol {
     use futures_lite::Stream;
     use nix::sys::timerfd::{ClockId, TimerFd};
 
+    use std::future::Future;
     use std::io::{Error, ErrorKind, Result};
     use std::pin::Pin;
     use std::task::{Context, Poll, ready};
@@ -272,7 +286,11 @@ mod smol {
         /// Resets the timer to never trigger and removes any pending wakeups.
         pub fn clear(&mut self) -> Result<()> {
             self.0.0.get_ref().unset()?;
-            self.0.0.get_ref().wait().map_err(Error::from)
+            match self.0.0.get_ref().wait().map_err(Error::from) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == ErrorKind::WouldBlock => Ok(()),
+                Err(other) => Err(other),
+            }
         }
 
         /// Equivalent to [`TimerType::after`], but reuses resources.
@@ -291,7 +309,7 @@ mod smol {
             super::interval(self.0.0.get_ref(), period)
         }
 
-        /// Equivalent to [`TimerType::interval_at`], but reuses resources
+        /// Equivalent to [`TimerType::interval_at`], but reuses resources.
         ///
         /// Any pending wakeups will be cleared.
         pub fn set_interval_at(&mut self, after: Duration, period: Duration) -> Result<()> {
@@ -304,7 +322,7 @@ mod smol {
         type Item = Result<()>;
 
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-            // Mirrors the behavior of `async_io::Timer` which doesn't returns `None` even if this is a never.
+            // Mirrors the behavior of `async_io::Timer` which doesn't return `None` even if this is a never.
             self.poll(cx).map(Some)
         }
     }
@@ -334,6 +352,7 @@ mod smol {
             loop {
                 match self.as_ref().0.get_ref().wait().map_err(Error::from) {
                     Ok(()) => break Poll::Ready(Ok(())),
+                    // Spurious wakeup
                     Err(err) if err.kind() == ErrorKind::WouldBlock => {}
                     Err(other) => {
                         break Poll::Ready(Err(other));
