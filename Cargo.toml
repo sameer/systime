@@ -1,0 +1,37 @@
+[package]
+name = "systime"
+version = "0.0.1"
+edition = "2024"
+description = "Portable timers that handle system sleep consistently."
+repository = "https://github.com/sameer/systime"
+license = "MIT OR Apache-2.0"
+keywords = ["time", "timers", "sleep", "interval", "timerfd"]
+categories = ["asynchronous", "date-and-time"]
+
+[features]
+default = ["tokio"]
+smol = ["dep:async-io", "dep:futures-lite"]
+tokio = ["dep:tokio"]
+
+[dependencies]
+async-io = { version = "^2.0", optional = true }
+futures-lite = { version = "^2.0", optional = true }
+pin-project = "^1.1.1"
+tokio = { version = "^1.8.0", optional = true, default-features = false, features = ["net", "time"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc = "^0.2.171"
+nix = { version = ">=0.30, <0.31", features = ["fs", "event" ] }
+
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+nix = { version = ">=0.27, <0.31", features = ["fs", "time"] }
+
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = ">=0.53.0, <0.63.0", features = [ "Win32", "Win32_Security", "Win32_System", "Win32_System_Threading" ] }
+
+[dev-dependencies]
+async-io = "^2.0"
+futures-lite = "2.6.1"
+tokio = { version = "^1.0", features = ["rt", "macros"] }
