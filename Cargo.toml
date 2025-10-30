@@ -29,6 +29,7 @@ nix = { version = ">=0.27, <0.31", features = ["fs", "time"] }
 
 
 [target.'cfg(target_os = "windows")'.dependencies]
+parking_lot = "^0.12.5"
 windows = { version = ">=0.53.0, <0.63.0", features = [ "Wdk_Foundation", "Win32", "Win32_Security", "Win32_System", "Win32_System_IO", "Win32_System_Threading" ] }
 
 [dev-dependencies]
