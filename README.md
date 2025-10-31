@@ -4,15 +4,25 @@
 
 ## Motivation
 
-Timers in std, tokio, and generally every Rust library behave differently depending on the platform:
+Time in the standard library, tokio, and generally every Rust crate has platform-dependent behavior:
 
-- **Linux/Android**: `CLOCK_MONOTONIC` excludes time spent sleeping
+- **Linux/Android**: `CLOCK_MONOTONIC` excludes time spent sleeping ([rust-lang/rust#71860](https://github.com/rust-lang/rust/issues/71860))
 - **macOS/iOS**: `CLOCK_UPTIME_RAW` (or `mach_absolute_time`) excludes time spent sleeping
 - **Windows**: `QueryPerformanceCounter` *includes* time spent sleeping ([rust-lang/rust#79462](https://github.com/rust-lang/rust/issues/79462))
 
 This makes it difficult to write portable code with predictable timer behavior, especially in applications that need to account for the real-world time that has passed (including system sleep).
 
 `systime` offers a simple API where you explicitly choose whether to track or ignore system sleep.
+
+### What is "sleep"?
+
+Sleep is a blanket term for any time a process spends suspended. Real-world time passes, but a process that isn't executing and won't see it. A clock that tracks sleep is still monotonic, it just has sudden jumps.
+
+A few examples:
+
+- [Doze on Android](https://developer.android.com/training/monitoring-device-state/doze-standby)
+- Suspend to RAM on desktop platforms
+- [Suspended apps on iOS](https://developer.apple.com/documentation/WatchKit/handling-common-state-transitions)
 
 ## Platform Support
 
@@ -37,9 +47,10 @@ Tracking sleep is useful for:
 Ignoring sleep is useful for:
 
 - **Internal scheduled tasks**: Run tasks at specific intervals in accordance with time spent executing (i.e. garbage collection).
-- **Performance monitoring / profiling**: Metrics should not track system sleep, because only execution time matters.
+- **Performance monitoring / profiling**: Client-side metrics probably shouldn't track system sleep since it adds wild, inaccurate p99/max values to your dashboards.
 
 ## Performance
 
-This library uses system OS timer facilities. There are limits on these resources, hence why most operations can return an error.
-Use these timers _sparingly_ and include a fallback to the appropriate equivalent (i.e. tokio::time for tokio) in case of failure.
+While every effort has been made to ensure timers are fast and efficient (i.e. sub-millisecond precision on Windows), this crate does use system timer facilities and there are limits on these resources. Hence why most operations can return an error.
+
+Use these timers _sparingly_ and include a fallback to the appropriate equivalent (i.e. tokio::time for tokio) in case of failure. Alternatively, a [timer wheel](https://tokio.rs/blog/2018-03-timers)-esque approach could be used.
