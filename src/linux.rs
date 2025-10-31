@@ -1,3 +1,9 @@
+//! Timer implementation using [timerfd](https://man7.org/linux/man-pages/man2/timerfd_create.2.html) on Linux.
+//!
+//! Each timer is backed by a file descriptor that's integrated with the async runtime's reactor
+//! via epoll/kqueue (mio for tokio). When a timer fires, the file descriptor becomes readable, waking the async
+//! task to deliver readiness.
+
 use std::time::Duration;
 
 use nix::sys::{

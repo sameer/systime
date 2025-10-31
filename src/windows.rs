@@ -1,3 +1,11 @@
+//! Timer implementation using Windows high-res timers and I/O completion ports.
+//!
+//! A background thread monitors a single, global completion port for timer events.
+//! When an event occurs, it notifies the corresponding async task, waking it to be polled and deliver readiness.
+//!
+//! Drawing from the [Go implementation](https://devblogs.microsoft.com/go/high-resolution-timers-windows/), low-level NT APIs are used to associate timers
+//! with the completion port, enabling sub-millisecond resolution.
+
 use parking_lot::Mutex;
 use std::io::Result;
 use std::os::raw::c_void;

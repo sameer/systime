@@ -1,3 +1,8 @@
+//! Timer implementation using [kqueue](https://en.wikipedia.org/wiki/Kqueue) on Apple targets (macOS/iOS/tvOS/watchOS/visionOS).
+//!
+//! Each timer is registered with its own kqueue. A kevent is received when the timer fires,
+//! waking the task.
+
 use std::io::{ErrorKind, Result};
 use std::{io::Error, time::Duration};
 
