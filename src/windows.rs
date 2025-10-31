@@ -133,6 +133,7 @@ impl BackgroundTimerThread {
     fn get() -> &'static Self {
         static REACTOR: OnceLock<BackgroundTimerThread> = OnceLock::new();
         REACTOR.get_or_init(|| {
+            // SAFETY: calling a WinAPI with valid parameters.
             let completion_port = Arc::new(CompletionPort(unsafe {
                 Owned::new(
                     CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, Self::NUM_THREADS)
@@ -160,6 +161,7 @@ impl BackgroundTimerThread {
         loop {
             let mut num_entries = 0;
             // Block indefinitely waiting for timer completions
+            // SAFETY: calling a WinAPI with valid parameters.
             let result = unsafe {
                 GetQueuedCompletionStatusEx(
                     *completion_port.0,
@@ -185,6 +187,7 @@ impl BackgroundTimerThread {
                     // Spurious wakeup?
                     continue;
                 }
+                // SAFETY: lpOverlapped was converted into a raw pointer with into_raw.
                 let weak: Box<Weak<Mutex<SharedTimerState>>> = unsafe {
                     Box::from_raw(entry.lpOverlapped as *mut Weak<Mutex<SharedTimerState>>)
                 };
@@ -200,6 +203,7 @@ impl BackgroundTimerThread {
                     if let Some(wait_completion_packet) = state.wait_completion_packet.as_ref() {
                         let mut signaled = 0;
                         // TODO: log this failure?
+                        // SAFETY: calling an NT API with valid parameters.
                         let _ = unsafe {
                             NtAssociateWaitCompletionPacket(
                                 **wait_completion_packet,
@@ -247,7 +251,9 @@ impl BackgroundTimerThread {
 /// Create a new wait completion packet not associated with anything.
 fn new_wait_completion_packet() -> windows::core::Result<Owned<HANDLE>> {
     let mut handle = HANDLE::default();
+    // SAFETY: calling an NT API with valid parameters.
     unsafe { NtCreateWaitCompletionPacket(&mut handle, GENERIC_ALL, ptr::null()) }.ok()?;
+    // SAFETY: handle is unique.
     Ok(unsafe { Owned::new(handle) })
 }
 
@@ -267,6 +273,7 @@ fn enqueue_timer(
     let key_ctx = ptr::null();
     let mut signaled = 0u8;
 
+    // SAFETY: calling an NT API with valid parameters.
     let res = unsafe {
         NtAssociateWaitCompletionPacket(
             **wait_completion_packet,
@@ -283,6 +290,7 @@ fn enqueue_timer(
 
     if let Err(err) = res {
         // Free the context since we got an error.
+        // SAFETY: `apc_context` is a unique pointer to a box
         unsafe {
             let _ = Box::from_raw(apc_context);
         }
@@ -293,6 +301,7 @@ fn enqueue_timer(
 }
 
 fn new_timer() -> windows::core::Result<Owned<HANDLE>> {
+    // SAFETY: calling a WinAPI with valid parameters.
     unsafe {
         Ok(Owned::new(CreateWaitableTimerExW(
             None,
@@ -311,6 +320,7 @@ fn set_timer(
 ) -> windows::core::Result<()> {
     // Negative time is relative
     let duetime = -((deadline.as_nanos() / 100) as i64);
+    // SAFETY: calling a WinAPI with valid parameters.
     unsafe {
         SetWaitableTimer(
             *timer,
@@ -371,6 +381,7 @@ impl Timer {
         // we shouldn't get a wakeup because the waker was cleared.
         //
         // TODO: we should likely store a generation counter to skip wakeups from before a reset.
+        // SAFETY: calling a WinAPI with a valid timer.
         let _ = unsafe { CancelWaitableTimer(*state.timer) };
         state.waker = None;
         state.fired_counter = None;
@@ -398,11 +409,14 @@ impl Drop for Timer {
     fn drop(&mut self) {
         let mut state = self.state.lock();
         // TODO: log these failures?
+        // SAFETY: calling a WInAPI with valid parameters.
         let _ = unsafe { CancelWaitableTimer(*state.timer) };
         if let Some(wait_completion_packet) = state.wait_completion_packet.take() {
+            // SAFETY: calling an NT API with valid parameters.
             let _ = unsafe { NtCancelWaitCompletionPacket(*wait_completion_packet, 1) }.ok();
         }
         // Tell the background thread to free lpOverlapped.
+        // SAFETY: calling a WinAPI with valid parameters.
         let _ = unsafe {
             PostQueuedCompletionStatus(
                 *BackgroundTimerThread::get().completion_port().0,

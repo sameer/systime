@@ -16,9 +16,9 @@ This makes it difficult to write portable code with predictable timer behavior, 
 
 ## Platform Support
 
-- **Linux/Android**: `timerfd` with `CLOCK_MONOTONIC` (ignore sleep) or `CLOCK_BOOTTIME` (track sleep)
-- **macOS/iOS**: `kqueue` + `EVFILT_TIMER` with mach absolute time (ignore sleep) or mach continuous time (track sleep)
-- **Windows**: I/O completion ports + high-resolution waitable timers (_incomplete_, sleep is always tracked)
+- ✅ **Linux/Android**: `timerfd` with `CLOCK_MONOTONIC` (ignore sleep) or `CLOCK_BOOTTIME` (track sleep)
+- ✅ **macOS/iOS**: `kqueue` + `EVFILT_TIMER` with mach absolute time (ignore sleep) or mach continuous time (track sleep)
+- ~ **Windows**: I/O completion ports + high-resolution waitable timers (_incomplete_, sleep is always tracked)
 
 ## Async Runtime Support
 
