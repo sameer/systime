@@ -37,7 +37,7 @@ Tracking sleep is useful for:
 Ignoring sleep is useful for:
 
 - **Internal scheduled tasks**: Run tasks at specific intervals in accordance with time spent executing (i.e. garbage collection).
-- **Performance monitoring / profiling**: Benchmarks should not track system sleep, because only execution time matters.
+- **Performance monitoring / profiling**: Metrics should not track system sleep, because only execution time matters.
 
 ## Performance
 
