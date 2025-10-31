@@ -17,7 +17,7 @@
 //!
 //! - **Linux/Android**: `timerfd` with `CLOCK_MONOTONIC` (ignore sleep) or `CLOCK_BOOTTIME` (track sleep)
 //! - **macOS/iOS**: `kqueue` + `EVFILT_TIMER` with mach absolute time (ignore sleep) or mach continuous time (track sleep)
-//! - **Windows**: Planned support (currently unimplemented)
+//! - **Windows**: partial -- sleep is always tracked
 //!
 //! # Runtime Support
 //!
@@ -46,7 +46,9 @@
 //! # Examples
 //!
 #![cfg_attr(feature = "tokio", doc = "## Basic sleep with tokio")]
-#![cfg_attr(feature = "tokio", doc = r#"
+#![cfg_attr(
+    feature = "tokio",
+    doc = r#"
 ```no_run
 use std::time::Duration;
 use systime::tokio::ClockType;
@@ -66,10 +68,13 @@ async fn main() -> std::io::Result<()> {
     Ok(())
 }
 ```
-"#)]
+"#
+)]
 //!
 #![cfg_attr(feature = "tokio", doc = "## Intervals with tokio")]
-#![cfg_attr(feature = "tokio", doc = r#"
+#![cfg_attr(
+    feature = "tokio",
+    doc = r#"
 ```no_run
 use std::time::Duration;
 use systime::tokio::ClockType;
@@ -87,10 +92,13 @@ async fn main() -> std::io::Result<()> {
     Ok(())
 }
 ```
-"#)]
+"#
+)]
 //!
 #![cfg_attr(feature = "smol", doc = "## smol support")]
-#![cfg_attr(feature = "smol", doc = r#"
+#![cfg_attr(
+    feature = "smol",
+    doc = r#"
 ```no_run
 use std::time::Duration;
 use systime::smol::TimerType;
@@ -116,11 +124,17 @@ fn main() -> std::io::Result<()> {
     })
 }
 ```
-"#)]
+"#
+)]
 //!
 #![cfg_attr(feature = "tokio", doc = "## Reusable timers")]
-#![cfg_attr(feature = "tokio", doc = "systime supports reuse to avoid allocating new system resources. In the tokio API:")]
-#![cfg_attr(feature = "tokio", doc = r#"
+#![cfg_attr(
+    feature = "tokio",
+    doc = "systime supports reuse to avoid allocating new system resources. In the tokio API:"
+)]
+#![cfg_attr(
+    feature = "tokio",
+    doc = r#"
 ```no_run
 use std::time::Duration;
 use systime::tokio::ClockType;
@@ -142,7 +156,8 @@ async fn main() -> std::io::Result<()> {
     Ok(())
 }
 ```
-"#)]
+"#
+)]
 
 #[cfg(feature = "smol")]
 pub use shared::smol;
