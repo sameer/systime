@@ -24,7 +24,7 @@ pub mod smol {
     }
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 

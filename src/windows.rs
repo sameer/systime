@@ -63,6 +63,9 @@ struct SharedTimerState {
     wait_completion_packet: Option<Owned<HANDLE>>,
 }
 
+/// SAFETY: Completion packets and timers in a mutex can safely be shared.
+unsafe impl Send for SharedTimerState {}
+
 impl SharedTimerState {
     fn new(timer: Owned<HANDLE>) -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self {
@@ -89,16 +92,16 @@ impl SharedTimerState {
     }
 }
 
-/// SAFETY: Completion port can safely be concurrently accessed.
-#[derive(Clone)]
-struct CompletionPort(Arc<Owned<HANDLE>>);
+struct CompletionPort(Owned<HANDLE>);
 
+/// SAFETY: A completion port can safely be concurrently accessed.
 unsafe impl Send for CompletionPort {}
+/// SAFETY: A completion port can safely be concurrently accessed.
 unsafe impl Sync for CompletionPort {}
 
 /// Internal state of the background thread responsible for notifying when timers have fired.
 struct BackgroundTimerThread {
-    completion_port: CompletionPort,
+    completion_port: Arc<CompletionPort>,
     /// Associated thread.
     _handle: JoinHandle<()>,
 }
@@ -122,7 +125,7 @@ impl BackgroundTimerThread {
     fn get() -> &'static Self {
         static REACTOR: OnceLock<BackgroundTimerThread> = OnceLock::new();
         REACTOR.get_or_init(|| {
-            let completion_port = CompletionPort(Arc::new(unsafe {
+            let completion_port = Arc::new(CompletionPort(unsafe {
                 Owned::new(
                     CreateIoCompletionPort(INVALID_HANDLE_VALUE, None, 0, Self::NUM_THREADS)
                         .expect("Failed to create global completion port"),
@@ -143,7 +146,7 @@ impl BackgroundTimerThread {
     }
 
     /// Starts an infinite loop that repeatedly calls [`GetQueuedCompletionStatusEx`] and processes any returned entries.
-    fn run(completion_port: CompletionPort) {
+    fn run(completion_port: Arc<CompletionPort>) {
         let mut entries = [OVERLAPPED_ENTRY::default(); Self::OVERLAPPED_ENTRY_BUFFER_SIZE];
 
         loop {
@@ -151,7 +154,7 @@ impl BackgroundTimerThread {
             // Block indefinitely waiting for timer completions
             let result = unsafe {
                 GetQueuedCompletionStatusEx(
-                    **completion_port.0,
+                    *completion_port.0,
                     &mut entries,
                     &mut num_entries,
                     u32::MAX,
@@ -192,7 +195,7 @@ impl BackgroundTimerThread {
                         let _ = unsafe {
                             NtAssociateWaitCompletionPacket(
                                 **wait_completion_packet,
-                                **completion_port.0,
+                                *completion_port.0,
                                 *state.timer,
                                 ptr::null(),
                                 entry.lpOverlapped as *const c_void,
@@ -259,7 +262,7 @@ fn enqueue_timer(
     let res = unsafe {
         NtAssociateWaitCompletionPacket(
             **wait_completion_packet,
-            **completion_port.0,
+            *completion_port.0,
             *state.timer,
             key_ctx,
             apc_context as *const c_void,
@@ -347,8 +350,13 @@ impl Timer {
             .map_err(|e| std::io::Error::from_raw_os_error(e.code().0))
     }
 
+    fn interval_at(&mut self, delay_until_start: Duration, period: Duration) -> Result<()> {
+        set_timer(&self.state.lock().timer, delay_until_start, Some(period))
+            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0))
+    }
+
     /// Cancels any outstanding triggers.
-    fn reset(&mut self) -> Result<()> {
+    fn clear(&mut self) -> Result<()> {
         let mut state = self.state.lock();
 
         // Best-effort stop the timer from firing. Even if it does fire,
@@ -356,10 +364,6 @@ impl Timer {
         //
         // TODO: we should likely store a generation counter to skip wakeups from before a reset.
         let _ = unsafe { CancelWaitableTimer(*state.timer) };
-        if let Some(wait_completion_packet) = state.wait_completion_packet.as_ref() {
-            let _ = unsafe { NtCancelWaitCompletionPacket(**wait_completion_packet, 1) }.ok()?;
-        }
-
         state.waker = None;
         state.fired_counter = None;
         Ok(())
@@ -373,7 +377,7 @@ impl Future for Timer {
         let mut state = self.state.lock();
         state.waker = Some(cx.waker().clone());
         if state.fired_counter != self.last_fired {
-            let last_fired = state.fired_counter.clone();
+            let last_fired = state.fired_counter;
             drop(state);
             self.as_mut().last_fired = last_fired;
             return Poll::Ready(());
@@ -393,11 +397,254 @@ impl Drop for Timer {
         // Tell the background thread to free lpOverlapped.
         let _ = unsafe {
             PostQueuedCompletionStatus(
-                **BackgroundTimerThread::get().completion_port().0,
+                *BackgroundTimerThread::get().completion_port().0,
                 0,
                 BackgroundTimerThread::DROP_KEY,
                 Some(self.weak_state_ptr as *const OVERLAPPED),
             )
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use crate::windows::Timer;
+
+    #[tokio::test]
+    async fn sleep() {
+        let duration = Duration::from_millis(10);
+        let now = Instant::now();
+        let mut timer = Timer::new().unwrap();
+        timer.sleep(duration).unwrap();
+        timer.await;
+        assert!(now.elapsed() > duration);
+    }
+
+    #[tokio::test]
+    async fn reset() {
+        let duration = Duration::from_millis(1);
+        let now = Instant::now();
+        let mut timer = Timer::new().unwrap();
+        timer.sleep(duration).unwrap();
+        timer.clear().unwrap();
+        timer.sleep(10 * duration).unwrap();
+        timer.await;
+        assert!(now.elapsed() > 10 * duration);
+    }
+
+    #[tokio::test]
+    async fn interval() {
+        let duration = Duration::from_millis(10);
+        let mut timer = Timer::new().unwrap();
+        for _ in 0..5 {
+            let now = Instant::now();
+            timer.interval(duration).unwrap();
+            (&mut timer).await;
+            assert!(now.elapsed() > duration);
+        }
+    }
+}
+
+#[cfg(feature = "tokio")]
+mod tokio {
+    use std::future::Future;
+    use std::io::Result;
+    use std::pin::Pin;
+    use std::time::Duration;
+
+    use crate::shared::tokio::ClockType;
+    use crate::windows::Timer;
+
+    impl ClockType {
+        /// Equivalent to [`tokio::time::sleep`].
+        pub fn sleep(&self, duration: Duration) -> Result<Sleep> {
+            let mut timer = Timer::new()?;
+            timer.sleep(duration)?;
+            Ok(Sleep(timer))
+        }
+
+        /// Similar to [`tokio::time::interval`], but with [`tokio::time::MissedTickBehavior::Skip`] as the default tick behavior.
+        pub fn interval(&self, duration: Duration) -> Result<Interval> {
+            let mut timer = Timer::new()?;
+            timer.interval(duration)?;
+            Ok(Interval {
+                inner: timer,
+                duration,
+            })
+        }
+
+        /// Similar to [`tokio::time::interval_at`], but with [`tokio::time::MissedTickBehavior::Skip`] as the tick behavior.
+        pub fn interval_at(
+            &self,
+            delay_until_start: Duration,
+            duration: Duration,
+        ) -> Result<Interval> {
+            let mut timer = Timer::new()?;
+            timer.interval_at(delay_until_start, duration)?;
+            Ok(Interval {
+                inner: timer,
+                duration,
+            })
+        }
+    }
+
+    #[pin_project::pin_project]
+    pub struct Sleep(#[pin] Timer);
+
+    impl Sleep {
+        fn clear(&mut self) -> Result<()> {
+            self.0.clear()
+        }
+
+        /// Resets this instance to end after `duration`.
+        ///
+        /// Calling this instead of recreating the sleep lets you reuse underlying resources.
+        pub fn reset(mut self: Pin<&mut Self>, duration: Duration) -> Result<()> {
+            self.as_mut().clear()?;
+            self.as_mut().0.sleep(duration)
+        }
+    }
+
+    impl Future for Sleep {
+        type Output = Result<()>;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            self.project().0.poll(cx).map(Ok)
+        }
+    }
+
+    #[pin_project::pin_project]
+    pub struct Interval {
+        #[pin]
+        inner: Timer,
+        duration: Duration,
+    }
+
+    impl Interval {
+        /// Future that waits until the next interval completes.
+        pub async fn tick(&mut self) -> Result<()> {
+            (&mut self.inner).await;
+            Ok(())
+        }
+
+        fn clear(&mut self) -> Result<()> {
+            self.inner.clear()
+        }
+
+        /// Resets this instance to end after the duration specified when it was created.
+        ///
+        /// Calling this instead of recreating the interval lets you reuse underlying resources.
+        pub fn reset(&mut self) -> Result<()> {
+            self.clear()?;
+            self.inner.interval(self.duration)
+        }
+
+        /// Like [`Interval::reset`], but lets you specify a duration after which the interval timer should begin.
+        pub fn reset_after(&mut self, after: Duration) -> Result<()> {
+            self.clear()?;
+            self.inner.interval_at(after, self.duration)
+        }
+    }
+}
+
+#[cfg(feature = "smol")]
+mod smol {
+    use futures_lite::Stream;
+
+    use std::future::Future;
+    use std::io::Result;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    use super::Timer as IocpTimer;
+    use crate::shared::smol::TimerType;
+
+    impl TimerType {
+        /// Equivalent to [`async_io::Timer::after`].
+        pub fn after(&self, duration: Duration) -> Result<Timer> {
+            let mut timer = IocpTimer::new()?;
+            timer.sleep(duration)?;
+            Ok(Timer(timer))
+        }
+
+        /// Equivalent to [`async_io::Timer::interval`].
+        pub fn interval(&self, duration: Duration) -> Result<Timer> {
+            let mut timer = IocpTimer::new()?;
+            timer.interval(duration)?;
+            Ok(Timer(timer))
+        }
+
+        /// Equivalent to [`async_io::Timer::interval_at`].
+        pub fn interval_at(
+            &self,
+            delay_until_start: Duration,
+            duration: Duration,
+        ) -> Result<Timer> {
+            let mut timer = IocpTimer::new()?;
+            timer.interval_at(delay_until_start, duration)?;
+            Ok(Timer(timer))
+        }
+
+        /// Equivalent to [`async_io::Timer::never`].
+        pub fn never(&self) -> Result<Timer> {
+            IocpTimer::new().map(Timer)
+        }
+    }
+
+    #[pin_project::pin_project]
+    pub struct Timer(#[pin] IocpTimer);
+
+    impl Timer {
+        /// Resets the timer to never trigger and removes any pending wakeups.
+        pub fn clear(&mut self) -> Result<()> {
+            self.0.clear()
+        }
+
+        /// Equivalent to [`TimerType::after`], but reuses resources.
+        ///
+        /// Any pending wakeups will be cleared.
+        pub fn set_after(&mut self, duration: Duration) -> Result<()> {
+            self.clear()?;
+            self.0.sleep(duration)
+        }
+
+        /// Equivalent to [`TimerType::interval`], but reuses resources.
+        ///
+        /// Any pending wakeups will be cleared.
+        pub fn set_interval(&mut self, period: Duration) -> Result<()> {
+            self.clear()?;
+            self.0.interval(period)
+        }
+
+        /// Equivalent to [`TimerType::interval_at`], but reuses resources.
+        ///
+        /// Any pending wakeups will be cleared.
+        pub fn set_interval_at(&mut self, after: Duration, period: Duration) -> Result<()> {
+            self.clear()?;
+            self.0.interval_at(after, period)
+        }
+    }
+
+    impl Stream for Timer {
+        type Item = Result<()>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            // Mirrors the behavior of `async_io::Timer` which doesn't return `None` even if this is a never.
+            self.poll(cx).map(Some)
+        }
+    }
+
+    impl Future for Timer {
+        type Output = Result<()>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            self.project().0.poll(cx).map(Ok)
+        }
     }
 }
