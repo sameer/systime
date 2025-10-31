@@ -17,7 +17,7 @@
 //!
 //! - **Linux/Android**: `timerfd` with `CLOCK_MONOTONIC` (ignore sleep) or `CLOCK_BOOTTIME` (track sleep)
 //! - **macOS/iOS**: `kqueue` + `EVFILT_TIMER` with mach absolute time (ignore sleep) or mach continuous time (track sleep)
-//! - **Windows**: partial -- sleep is always tracked
+//! - **Windows**: I/O completion ports + high-resolution timers (partial, sleep is always tracked)
 //!
 //! # Runtime Support
 //!
